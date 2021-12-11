@@ -1,0 +1,197 @@
+---
+title: 'Project 2: Data Mining, Classification, Prediction'
+author: "SDS322E"
+date: ''
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+  pdf_document:
+    toc: no
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, fig.align = "center", warning = F, message = F,
+tidy=TRUE, tidy.opts=list(width.cutoff=60), R.options=list(max.print=100))
+
+class_diag <- function(score, truth, positive, cutoff=.5){
+
+  pred <- factor(score>cutoff,levels=c("TRUE","FALSE"))
+  truth <- factor(truth==positive, levels=c("TRUE","FALSE"))
+
+  tab<-table(truth, pred)
+  acc=sum(diag(tab))/sum(tab)
+  sens=tab[1,1]/rowSums(tab)[1]
+  spec=tab[2,2]/rowSums(tab)[2]
+  ppv=tab[1,1]/colSums(tab)[1]
+
+#CALCULATE F1
+  f1=2*(sens*ppv)/(sens+ppv)
+  
+#CALCULATE EXACT AUC
+  truth<-as.numeric(truth=="TRUE")
+  ord<-order(score, decreasing=TRUE)
+  score <- score[ord]; truth <- truth[ord]
+  TPR=cumsum(truth)/max(1,sum(truth))
+  FPR=cumsum(!truth)/max(1,sum(!truth))
+  dup<-c(score[-1]>=score[-length(score)], FALSE)
+  TPR<-c(0,TPR[!dup],1); FPR<-c(0,FPR[!dup],1)
+  n <- length(TPR)
+  auc<- sum( ((TPR[-1]+TPR[-n])/2) * (FPR[-1]-FPR[-n]) )
+  round(data.frame(acc,sens,spec,ppv,f1,ba=(sens+spec)/2,auc, row.names = "Metrics"),4)
+}
+```
+
+# Mining, Classification, Prediction
+
+## Maurya Atluri ma57744
+
+### Introduction 
+
+The dataset I am using is a dataset called Fair's Affairs and contains infidelity data from a survey conducted in 1969. I found the dataset on https://vincentarelbundock.github.io/Rdatasets/datasets.html, the dataset itself is from this link, https://vincentarelbundock.github.io/Rdatasets/doc/AER/Affairs.html. The main variables are the number of affairs (numeric), gender(binary), age(numeric), number of years married(numeric), wether they had children or not(binary). and numeric scales for religiousness, education and ratings of the marriage. The dataset has 601 observationsm which is 75 observations per variable for the 8 variables in this dataset.
+
+```{R}
+library(tidyverse)
+affairs <- read_csv('Affairs.csv')
+affairs %>% select(-occupation,-X1) -> affairs
+#Subset of numeric only data for clustering/pca
+affairs %>% select(-gender,-children) -> affairs_num
+#Subset for classifier, male = 1, female = 0
+affairs %>% select(-children) %>% mutate(gender=as.numeric(gender=='male')) -> affairs_class
+```
+
+### Cluster Analysis
+
+```{R}
+library(cluster)
+pam_dat<-affairs_num
+#Finding largest sil_width
+sil_width<-vector()
+for(i in 2:10){  
+  pam_fit <- pam(pam_dat, k = i)  
+  sil_width[i] <- pam_fit$silinfo$avg.width  
+}
+ggplot()+geom_line(aes(x=1:10,y=sil_width))+scale_x_continuous(name="k",breaks=1:10)
+#Largest sil_width with 2 clusters
+affairs_pam <- pam(pam_dat, k = 2) 
+affairs_pam
+#Finding average silhouette width
+affairs_pam$silinfo$avg.width
+#Medoids of clusters
+affairs%>% slice(affairs_pam$id.med)
+#Visualization of all pairwise combinations of variables colored by cluster assignment
+library(GGally)
+affairs_num %>% mutate(cluster=as.factor(affairs_pam$clustering)) %>% ggpairs(cols= 1:6, aes(color=cluster))
+```
+
+The clusters with this data have an average silhouette width of 0.49 which is at the higher end of the range for being considered a weak structure that could be artificial, but it is acceptable. We also see that there seems to be good separation between clusters in the pairwise visualization.From this clustering and visualization we can see which clusters are more or less separated, and I notice that the clusters are primarily separated by the age variable and yearsmarried which are highly correlated, while affairs, religiousness,education, and rating have a much higher overlap between clusters. From the pairwise visualization I notice that while affairs does not seem to be very impacted by age or yearsmarried, it does seem to be more impacted by religiousness, education and rating of the marriage. 
+    
+    
+### Dimensionality Reduction with PCA
+
+```{R}
+princomp(affairs_num, cor=T) -> pca1
+pca1
+eigval<-pca1$sdev^2
+eigval
+varprop=round(eigval/sum(eigval), 2)
+#Variance of each PC
+ggplot() + geom_bar(aes(y=varprop, x=1:6), stat="identity") + xlab("") + geom_text(aes(x=1:6, y=varprop, label=round(varprop, 2)), vjust=1, col="white", size=5) + scale_y_continuous(breaks=seq(0, .6, .2), labels=scales::percent) +scale_x_continuous(breaks=1:10)
+summary(pca1, loadings=T)
+library(factoextra)
+fviz_pca(pca1, axes=c(1,2))
+fviz_pca(pca1, axes=c(1,3))
+fviz_pca(pca1, axes=c(1,4))
+fviz_pca(pca1, axes=c(2,3))
+fviz_pca(pca1, axes=c(2,4))
+fviz_pca(pca1, axes=c(3,4))
+```
+
+The first four PCs which i kept explain 86% of the variance in the data. The first PC score correlate all of the numeric variables excepting education, and the higher the score on PC1, the higher age/years married and the lower the rating, with affairs and religiousness also being somewhat higher. Lower scores on PC1 mean the opposite, lower affairs,age,yearsmarried, and religiousness and a higher rating of the marriage. It is not all that surprising that as people get older/have been married for longer they are more likely to have had affairs/be religious and less likely to be happy with their marriage. The second PC primarily indicates affairs, religiousness, and rating, with the higher PC2, the higher the number of affairs and the lower the religiousness and rating of the marriage, and the opposite is true with the lower PC2 gets. PC3, as it gets higher primarily indicates a higher education along with a lower level of religiousness as well as a slightly higher level of rating,, affairs and age, and the opposite is true as PC3 gets lower. PC4, as it gets higher indicates a higher number of affairs, level of religiousness and education, and a lower age/yearsmarried and rating of the marriage, and the opposite is true as PC4 gets lower.
+
+###  Linear Classifier
+
+```{R}
+library(caret)
+logistic_fit <- glm(gender == 1~., data=affairs_class, family="binomial")
+prob_reg <- predict(logistic_fit, type="response")
+class_diag(prob_reg, affairs_class$gender, positive="1")
+table(actual = affairs_class$gender, predicted = as.numeric(prob_reg>.5))
+```
+
+```{R}
+set.seed(1234)
+cv <- trainControl(method="cv", number = 5, classProbs = T, savePredictions = T)
+fit <- train(gender~., data=affairs_class, trControl=cv, method="glm")
+class_diag(fit$pred$pred, fit$pred$obs, positive=1)
+```
+
+The in sample performance is an accuracy of ~69% with an AUC of ~.76 meaning the model predicts the gender using all the numeric data correctly 69% of the time and the AUC indicates that the model is doing somewhat well. The model is performing decently well according to cross validation, with an accuracy of ~70% and an AUC of ~.75 with cross validation, and there do not seem to be major signs of overfitting as the AUC and other metrics are similar both for in sample and out of sample with cross validation.
+
+### Non-Parametric Classifier
+
+```{R}
+knn_fit <- knn3(gender == 1~., data=affairs_class)
+prob_knn <- predict(knn_fit,newdata=affairs_class)[,2]
+class_diag(prob_knn, affairs_class$gender, positive="1")
+```
+
+```{R}
+set.seed(1234)
+cv <- trainControl(method="cv", number = 5, classProbs = T, savePredictions = T)
+fit <- train(gender~., data=affairs_class, trControl=cv, method="knn")
+class_diag(fit$pred$pred, fit$pred$obs, positive=1)
+```
+
+The in sample performance is an accuracy of ~77% with an AUC of .84 meaning the model predicts the gender using all the numeric data correctly 77% of the time and the AUC indicates that the model is doing better than the linear classifier. The model is performing less well according to cross validation, with an accuracy of ~67% and an AUC of ~.73 with cross validation, and there do seem to be major signs of overfitting as the AUC and other metrics are much higher for in sample than for out of sample with cross validation. The nonparametric model here has worse performance with cross validation than does the linear classifier.
+
+
+
+### Regression/Numeric Prediction
+
+```{R}
+library(rpart)
+library(rpart.plot)
+regression_fit <- rpart(affairs~., data=affairs)
+yhat <- predict(regression_fit)
+y <- affairs$affairs
+#mean squared error (MSE)
+mean((y-yhat)^2) 
+```
+
+```{R}
+set.seed(1234)
+cv <- trainControl(method="cv", number = 5, classProbs = T, savePredictions = T)
+fit <- train(affairs~., data=affairs_class, trControl=cv, method="rpart")
+mean(fit$results$RMSE)^2 #MSE
+```
+
+Using a regression to predict the number of affairs using all of the other available data resulted in an MSE of 8.2818 for its in sample performance. Using cross validation on this same model, the MSE is 10.298, a good bit higher indicating that there may be some overfitting in this model.  The MSE being as high as it is also indicates that this model does not do a great job of predicting the number of affairs using the remaining data.
+
+### Python 
+
+```{R}
+library(reticulate)
+r_object <- c(0,1,2,3,4,5,6,7,8,9)
+```
+
+```{python}
+py_object = [0,1,2,3,4,5,6,7,8,9]
+print(r.r_object)
+```
+
+```{R}
+print(py$py_object)
+```
+
+Here using reticulate I can use an object saved in R in a python code chunk using r., and use an object saved in python in an R code chunk using py$.
+
+### Concluding Remarks
+
+Thanks for an interesting semester, glad I properly learned R and especially dplyr as my previous experience/classes uses R felt very lacking.
+
+
+
+
